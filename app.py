@@ -1,91 +1,99 @@
-# from flask import Flask, request, send_file
-# from PIL import Image, ImageDraw, ImageFont
-# import uuid
-# import os
-#
-# app = Flask(__name__)
-#
-# @app.route('/generate-thumbnail', methods=['POST'])
-# def generate_thumbnail():
-#     source = request.form.get("source", "default")
-#     name = request.form.get("name", "John Doe")
-#
-#     person_image_map = {
-#         "linkedin": "person1.png"
-#     }
-#
-#     person_img_path = os.path.join("assets", person_image_map.get(source, "person1.png"))
-#     bg_img_path = os.path.join("assets", "background.png")
-#
-#     # Create the output folder if it doesn't exist
-#     os.makedirs("generated", exist_ok=True)
-#     final_path = os.path.join("generated", f"{uuid.uuid4().hex}_thumb.png")
-#
-#     try:
-#         # Load images
-#         background = Image.open(bg_img_path).convert("RGBA")
-#         person = Image.open(person_img_path).convert("RGBA").resize((300, 300))
-#
-#         # Paste person image
-#         background.paste(person, (50, 100), person)
-#
-#         # Draw text
-#         draw = ImageDraw.Draw(background)
-#         font = ImageFont.load_default()
-#         draw.text((400, 150), name, font=font, fill="black")
-#
-#         # Save to local folder (not /tmp)
-#         background.save(final_path)
-#
-#         print(f"Saved thumbnail to: {final_path}")
-#         return send_file(final_path, mimetype='image/png')
-#
-#     except Exception as e:
-#         return {"error": str(e)}, 500
-#
-# if __name__ == '__main__':
-#     app.run(debug=True, port=5000)
-
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 from PIL import Image, ImageDraw, ImageFont
 import uuid
 import os
 
 app = Flask(__name__)
-os.makedirs("generated", exist_ok=True)
 
 @app.route('/generate-thumbnail', methods=['POST'])
 def generate_thumbnail():
+    source = request.form.get("source", "default")
     name = request.form.get("name", "John Doe")
-    # person_file = request.files.get("person")
-    # if not person_file:
-    #     return {"error": "Missing person image file"}, 400
 
-    # Paths
-    bg_path = os.path.join("assets", "background.png")
-    bg = Image.open(bg_path).convert("RGBA")
+    person_image_map = {
+        "linkedin": "person1.png"
+    }
 
-    person_file = os.path.join("assets", "person1.png")
-    # Load and resize person image
-    person = Image.open(person_file).convert("RGBA")
-    person = person.resize((300, 300), Image.LANCZOS)
+    person_img_path = os.path.join("assets", person_image_map.get(source, "person1.png"))
+    bg_img_path = os.path.join("assets", "background.png")
+    output_id = uuid.uuid4().hex
+    output_dir = "generated"
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Center person
-    bg_width, bg_height = bg.size
-    px, py = (bg_width - person.width) // 2, (bg_height - person.height) // 2
-    bg.paste(person, (px, py), person)
+    # Sanity check: can we even write a file?
+    try:
+        Image.new("RGB", (100, 100), color="red").save(os.path.join(output_dir, "test_write.png"))
+    except Exception as e:
+        return jsonify({"error": f"Unable to write to output folder: {str(e)}"}), 500
 
-    # Draw text (optional)
-    draw = ImageDraw.Draw(bg)
-    font = ImageFont.load_default()  # Or use truetype if you prefer
-    text_x, text_y = (bg_width // 2) - 50, py + person.height + 20
-    draw.text((text_x, text_y), name, font=font, fill="black")
+    try:
+        # === Load background ===
+        if not os.path.exists(bg_img_path):
+            return jsonify({"error": f"Background image not found: {bg_img_path}"}), 500
 
-    # Save and return
-    filename = f"generated/thumbnail_{uuid.uuid4().hex}.png"
-    bg.save(filename)
-    return send_file(filename, mimetype='image/png')
+        try:
+            background = Image.open(bg_img_path)
+        except Exception as e:
+            return jsonify({"error": f"Failed to open background image: {str(e)}"}), 500
+
+        try:
+            background = background.convert("RGBA")
+        except Exception as e:
+            return jsonify({"error": f"Failed to convert background to RGBA: {str(e)}"}), 500
+
+        try:
+            background.save(os.path.join(output_dir, f"stage_1_background_{output_id}.png"))
+        except Exception as e:
+            return jsonify({"error": f"Failed to save background image: {str(e)}"}), 500
+
+        # === Load person image ===
+        if not os.path.exists(person_img_path):
+            return jsonify({"error": f"Person image not found: {person_img_path}"}), 500
+
+        try:
+            person = Image.open(person_img_path).convert("RGBA").resize((300, 300))
+            person.save(os.path.join(output_dir, f"stage_2_person_resized_{output_id}.png"))
+        except Exception as e:
+            return jsonify({"error": f"Failed to process person image: {str(e)}"}), 500
+
+        # === Paste ===
+        try:
+            composed = background.copy()
+            px = (composed.width - person.width) // 2
+            py = (composed.height - person.height) // 2
+            composed.paste(person, (px, py), person)
+            composed.save(os.path.join(output_dir, f"stage_3_pasted_{output_id}.png"))
+        except Exception as e:
+            return jsonify({"error": f"Failed to paste person image: {str(e)}"}), 500
+
+        # === Text ===
+        try:
+            draw = ImageDraw.Draw(composed)
+            font = ImageFont.load_default()
+            draw.text((px, py + person.height + 10), name, font=font, fill="black")
+            composed.save(os.path.join(output_dir, f"stage_4_text_{output_id}.png"))
+        except Exception as e:
+            return jsonify({"error": f"Failed to draw text: {str(e)}"}), 500
+
+        # === Save final ===
+        final_path = os.path.join(output_dir, f"final_{output_id}.png")
+        try:
+            composed.save(final_path)
+        except Exception as e:
+            return jsonify({"error": f"Failed to save final thumbnail: {str(e)}"}), 500
+
+        if not os.path.exists(final_path) or os.path.getsize(final_path) == 0:
+            return jsonify({"error": "Final file is missing or empty"}), 500
+
+        return send_file(final_path, mimetype='image/png')
+
+    except Exception as e:
+        return jsonify({"error": f"Unhandled exception: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
+
+
+
+
 
